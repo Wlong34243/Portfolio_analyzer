@@ -1,13 +1,16 @@
+"""
+Portfolio Analyzer Pro - Streamlit Web App
+Professional portfolio analysis with risk assessment and options strategies
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import io
 import re
 from datetime import datetime
-import matplotlib.pyplot as plt
-import seaborn as sns
-import yfinance as yf
-from scipy.stats import norm
+import plotly.express as px
+import plotly.graph_objects as go
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -19,32 +22,36 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2.5rem;
+        font-size: 3rem;
         font-weight: bold;
-        color: #1e3d59;
         text-align: center;
+        background: linear-gradient(90deg, #1e3c72, #2a5298);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
         margin-bottom: 2rem;
     }
-    .metric-container {
-        background-color: #f0f2f6;
+    .success-box {
+        background: #d4edda;
         padding: 1rem;
         border-radius: 0.5rem;
-        margin: 0.5rem 0;
-    }
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 0.25rem;
-        padding: 1rem;
+        border-left: 4px solid #28a745;
         margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize session state
+if 'analyzed_data' not in st.session_state:
+    st.session_state.analyzed_data = None
+if 'show_analysis' not in st.session_state:
+    st.session_state.show_analysis = False
+
+# Utility functions
+@st.cache_data
 def clean_numeric(value):
     """Clean numeric values - remove $ signs, commas, parentheses"""
     if pd.isna(value) or value is None:
@@ -77,7 +84,7 @@ def find_account_sections(df):
     """Find where each account section starts"""
     account_patterns = [
         'Individual_401', 'Contributory', 'Joint_Tenant', 'Individual',
-        'Account Total', 'Cash & Cash'
+        'Account Total'
     ]
     
     account_sections = []
@@ -86,20 +93,16 @@ def find_account_sections(df):
     for idx, row in df.iterrows():
         first_col = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
         
+        # Check for account headers
         for pattern in account_patterns:
             if pattern.lower() in first_col.lower():
                 current_account = first_col
                 break
         
-        if len(first_col) > 0 and not any(word in first_col.lower() for word in ['account total', 'total']):
-            if 'cash' in first_col.lower() or any(word in first_col.lower() for word in ['cash', 'investments', 'sweep', 'core']):
-                account_sections.append({
-                    'row_index': idx,
-                    'account': current_account,
-                    'symbol': first_col,
-                    'row_data': row
-                })
-            elif not any(word in first_col.lower() for word in ['cash']):
+        # Include positions AND cash positions
+        if len(first_col) > 0 and not any(word in first_col.lower() for word in ['account', 'total']):
+            # Include both regular positions and cash positions
+            if (first_col.isalpha() and len(first_col) <= 6) or 'cash & cash investments' in first_col.lower():
                 account_sections.append({
                     'row_index': idx,
                     'account': current_account,
@@ -115,20 +118,36 @@ def create_aggregated_positions(sections, original_df):
     
     for section in sections:
         row_data = section['row_data']
+        symbol = section['symbol']
         
         try:
-            position = {
-                'Account': section['account'],
-                'Symbol': str(row_data.iloc[0]) if pd.notna(row_data.iloc[0]) else '',
-                'Description': str(row_data.iloc[1]) if len(row_data) > 1 and pd.notna(row_data.iloc[1]) else '',
-                'Quantity': clean_numeric(row_data.iloc[2]) if len(row_data) > 2 else 0,
-                'Price': clean_numeric(row_data.iloc[3]) if len(row_data) > 3 else 0,
-                'Market_Value': clean_numeric(row_data.iloc[6]) if len(row_data) > 6 else 0,
-                'Day_Change_Dollar': clean_numeric(row_data.iloc[7]) if len(row_data) > 7 else 0,
-                'Day_Change_Percent': clean_numeric(row_data.iloc[8]) if len(row_data) > 8 else 0,
-            }
+            # Handle cash positions specially
+            if 'cash & cash investments' in symbol.lower():
+                position = {
+                    'Account': section['account'],
+                    'Symbol': 'CASH',
+                    'Description': 'Cash & Cash Investments',
+                    'Quantity': 1,
+                    'Price': clean_numeric(row_data.iloc[6]) if len(row_data) > 6 else 0,
+                    'Market_Value': clean_numeric(row_data.iloc[6]) if len(row_data) > 6 else 0,
+                    'Day_Change_Dollar': clean_numeric(row_data.iloc[7]) if len(row_data) > 7 else 0,
+                    'Day_Change_Percent': clean_numeric(row_data.iloc[8]) if len(row_data) > 8 else 0,
+                }
+            else:
+                # Handle regular securities
+                position = {
+                    'Account': section['account'],
+                    'Symbol': symbol,
+                    'Description': str(row_data.iloc[1]) if len(row_data) > 1 and pd.notna(row_data.iloc[1]) else '',
+                    'Quantity': clean_numeric(row_data.iloc[2]) if len(row_data) > 2 else 0,
+                    'Price': clean_numeric(row_data.iloc[3]) if len(row_data) > 3 else 0,
+                    'Market_Value': clean_numeric(row_data.iloc[6]) if len(row_data) > 6 else 0,
+                    'Day_Change_Dollar': clean_numeric(row_data.iloc[7]) if len(row_data) > 7 else 0,
+                    'Day_Change_Percent': clean_numeric(row_data.iloc[8]) if len(row_data) > 8 else 0,
+                }
             
-            if position['Symbol'] and position['Market_Value'] != 0:
+            # Only include positions with market value
+            if position['Market_Value'] != 0:
                 positions.append(position)
                 
         except Exception as e:
@@ -151,29 +170,44 @@ def create_aggregated_positions(sections, original_df):
 
 def classify_sector(symbol, description=""):
     """Classify securities by sector"""
-    tech_symbols = ['AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'TSLA', 'CRM', 'ADBE']
+    tech_symbols = ['AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA', 'TSLA', 'CRM', 'ADBE', 'AMD', 'INTC', 'CSCO', 'PANW', 'ZS', 'DELL', 'AVGO']
     energy_symbols = ['XOM', 'ET', 'EPD', 'NEE', 'COP', 'SLB']
     health_symbols = ['UNH', 'JNJ', 'PFE']
     financial_symbols = ['KEY', 'BX', 'ARCC']
+    reit_symbols = ['O', 'IIPR', 'ADC']
+    comm_symbols = ['VZ', 'DIS']
+    industrial_symbols = ['MMM', 'ETN', 'HMC']
+    consumer_symbols = ['BABA']
+    crypto_symbols = ['GBTC']
+    
+    etf_patterns = ['ETF', 'FUND', 'INDEX', 'SPDR', 'VANGUARD', 'ISHARES', 'INVESCO', 'SCHWAB', 'SELECT']
     
     symbol = symbol.upper()
     desc_upper = description.upper()
     
-    # Comprehensive cash detection
-    cash_indicators = [
-        'CASH', 'MONEY', 'SWEEP', 'SETTLEMENT', 'CORE', 'FDIC', 'BANK',
-        'SAVINGS', 'CHECKING', 'DEPOSIT', 'MMDA', 'MM', 'OVERNIGHT',
-        'INVESTMENTS'
-    ]
+    # Handle cash specially
+    if symbol == 'CASH':
+        return 'Cash & Equivalents'
     
-    if 'CASH & CASH INVESTMENTS' in desc_upper or \
-       'CASH & CASH INVESTMENTS' in symbol or \
-       any(indicator in symbol for indicator in cash_indicators) or \
-       any(indicator in desc_upper for indicator in cash_indicators):
-        return 'Cash & Cash Equivalents'
-    elif 'ETF' in desc_upper or 'FUND' in desc_upper:
-        return 'ETF'
-    elif symbol in tech_symbols:
+    if any(pattern in desc_upper for pattern in etf_patterns) or symbol in ['VTI', 'VEA', 'VEU', 'XLF', 'SCHD', 'IFRA', 'OIH', 'PPA']:
+        if any(word in desc_upper for word in ['FINANCIAL', 'BANK']):
+            return 'ETF-Financial'
+        elif any(word in desc_upper for word in ['TECH', 'NASDAQ', 'QQQ']):
+            return 'ETF-Technology'
+        elif any(word in desc_upper for word in ['ENERGY', 'OIL']):
+            return 'ETF-Energy'
+        elif any(word in desc_upper for word in ['INFRAST', 'UTILITY']):
+            return 'ETF-Infrastructure'
+        elif any(word in desc_upper for word in ['DIVIDEND', 'INCOME']):
+            return 'ETF-Dividend'
+        elif any(word in desc_upper for word in ['INTERNATIONAL', 'WORLD', 'DEVELOPED']):
+            return 'ETF-International'
+        elif any(word in desc_upper for word in ['DEFENSE', 'AEROSPACE']):
+            return 'ETF-Defense'
+        else:
+            return 'ETF-Broad Market'
+    
+    if symbol in tech_symbols:
         return 'Technology'
     elif symbol in energy_symbols:
         return 'Energy'
@@ -181,293 +215,158 @@ def classify_sector(symbol, description=""):
         return 'Healthcare'
     elif symbol in financial_symbols:
         return 'Financial Services'
+    elif symbol in reit_symbols:
+        return 'Real Estate'
+    elif symbol in comm_symbols:
+        return 'Communication'
+    elif symbol in industrial_symbols:
+        return 'Industrial'
+    elif symbol in consumer_symbols:
+        return 'Consumer Discretionary'
+    elif symbol in crypto_symbols:
+        return 'Cryptocurrency'
     else:
         return 'Other'
 
-def calculate_portfolio_metrics(consolidated_df):
-    """Calculate comprehensive portfolio metrics from consolidated positions"""
-    total_value = consolidated_df['Market_Value'].sum()
-    sorted_df = consolidated_df.sort_values('Market_Value', ascending=False)
-    
-    cash_positions = consolidated_df[consolidated_df['Sector'] == 'Cash & Cash Equivalents']
-    cash_value = cash_positions['Market_Value'].sum()
+def calculate_portfolio_metrics(consolidated_df, total_portfolio_value):
+    """Calculate comprehensive portfolio metrics using consolidated positions"""
     
     metrics = {
-        'total_portfolio_value': total_value,
+        'total_portfolio_value': total_portfolio_value,
         'position_count': len(consolidated_df),
-        'average_position_size': total_value / len(consolidated_df) if len(consolidated_df) > 0 else 0,
-        'largest_position': sorted_df['Market_Value'].iloc[0],
-        'largest_position_symbol': sorted_df['Symbol'].iloc[0],
-        'top_10_concentration': sorted_df.head(10)['Market_Value'].sum() / total_value * 100,
-        'top_5_concentration': sorted_df.head(5)['Market_Value'].sum() / total_value * 100,
-        'single_largest_weight': sorted_df['Market_Value'].iloc[0] / total_value * 100,
-        'cash_percentage': (cash_value / total_value * 100) if total_value > 0 else 0
+        'average_position_size': total_portfolio_value / len(consolidated_df) if len(consolidated_df) > 0 else 0,
+        'largest_position': consolidated_df['Market_Value'].max(),
+        'smallest_position': consolidated_df['Market_Value'].min(),
+        'top_10_concentration': consolidated_df.nlargest(10, 'Market_Value')['Market_Value'].sum() / total_portfolio_value * 100,
+        'top_5_concentration': consolidated_df.nlargest(5, 'Market_Value')['Market_Value'].sum() / total_portfolio_value * 100,
+        'single_largest_weight': consolidated_df['Market_Value'].max() / total_portfolio_value * 100,
+        'cash_percentage': consolidated_df[consolidated_df['Symbol'] == 'CASH']['Market_Value'].sum() / total_portfolio_value * 100
     }
     
     return metrics
 
-def get_technical_analysis(symbols, period='3mo'):
-    """Fetch and analyze technical data for symbols"""
-    tech_data = []
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, symbol in enumerate(symbols):
-        try:
-            status_text.text(f'Analyzing {symbol}... ({i+1}/{len(symbols)})')
-            progress_bar.progress((i + 1) / len(symbols))
-            
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period=period)
-            
-            if len(hist) > 20:
-                current_price = hist['Close'].iloc[-1]
-                
-                # Technical indicators
-                sma_20 = hist['Close'].rolling(window=20).mean().iloc[-1]
-                sma_50 = hist['Close'].rolling(window=50).mean().iloc[-1] if len(hist) >= 50 else sma_20
-                
-                # RSI calculation
-                delta = hist['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                rsi = (100 - (100 / (1 + rs))).iloc[-1]
-                
-                # Support and resistance
-                recent_data = hist.tail(20)
-                resistance = recent_data['High'].max()
-                support = recent_data['Low'].min()
-                
-                # Generate signal
-                if rsi < 30:
-                    signal = "OVERSOLD"
-                elif rsi > 70:
-                    signal = "OVERBOUGHT"
-                elif current_price > sma_20:
-                    signal = "BULLISH"
-                else:
-                    signal = "BEARISH"
-                
-                tech_data.append({
-                    'Symbol': symbol,
-                    'Current_Price': round(current_price, 2),
-                    'RSI': round(rsi, 1),
-                    'SMA_20': round(sma_20, 2),
-                    'SMA_50': round(sma_50, 2),
-                    'Price_vs_SMA20': "Above" if current_price > sma_20 else "Below",
-                    'Support': round(support, 2),
-                    'Resistance': round(resistance, 2),
-                    'Signal': signal,
-                    'Volume': int(hist['Volume'].iloc[-1]) if len(hist) > 0 else 0
-                })
-        except Exception as e:
-            st.warning(f"Could not fetch data for {symbol}: {str(e)}")
-            continue
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    return tech_data
-
-def analyze_options_strategies(symbol_agg, min_weight=3):
-    """Analyze options strategies for large positions"""
-    large_positions = symbol_agg[
-        (symbol_agg['Consolidated_Weight'] > min_weight) & 
-        (symbol_agg['Sector'] != 'Cash & Cash Equivalents')
-    ].copy()
-    
+def analyze_options_opportunities(symbol_agg):
+    """Analyze options opportunities for large positions"""
+    large_positions = symbol_agg[(symbol_agg['Consolidated_Weight'] > 3) & (symbol_agg['Symbol'] != 'CASH')].copy()
     options_data = []
     
-    for _, position in large_positions.iterrows():
+    for _, position in large_positions.head(10).iterrows():
         symbol = position['Symbol']
         
         if len(symbol) <= 4 and symbol.isalpha():
             position_value = position['Market_Value']
             weight = position['Consolidated_Weight']
-            quantity = position.get('Quantity', 0)
             
-            if quantity > 0:
-                estimated_price = position_value / quantity
-            else:
-                estimated_price = 100
+            estimated_price = position_value / position.get('Quantity', 1) if position.get('Quantity', 0) > 0 else 100
+            total_shares = position.get('Quantity', position_value / estimated_price)
+            round_lots = max(1, int(total_shares / 100))
             
-            # Covered call analysis
-            monthly_premium_rate = 0.02  # 2% monthly estimate
-            round_lots = max(1, int(quantity / 100))
+            estimated_premium = estimated_price * 0.02  # 2% estimate
+            monthly_yield = (estimated_premium * round_lots * 100) / position_value * 100
             
-            if round_lots > 0:
-                monthly_income = position_value * monthly_premium_rate
-                annual_income = monthly_income * 12
-                
-                options_data.append({
-                    'Symbol': symbol,
-                    'Strategy': 'Covered Call',
-                    'Position_Value': round(position_value, 2),
-                    'Position_Weight': round(weight, 1),
-                    'Current_Price_Est': round(estimated_price, 2),
-                    'Suggested_Strike': round(estimated_price * 1.05, 2),
-                    'Round_Lots': round_lots,
-                    'Monthly_Income_Est': round(monthly_income, 2),
-                    'Monthly_Yield_Est': round((monthly_income / position_value) * 100, 2),
-                    'Annual_Income_Est': round(annual_income, 2),
-                    'Annual_Yield_Est': round((annual_income / position_value) * 100, 2),
-                    'Recommended_Expiration': '30-45 days'
-                })
-    
-    return options_data
-
-def create_risk_analysis(symbol_agg, agg_df, metrics):
-    """Create comprehensive risk analysis"""
-    risk_data = []
-    
-    # Position concentration risks
-    high_concentration = symbol_agg[symbol_agg['Consolidated_Weight'] > 10]
-    for _, pos in high_concentration.iterrows():
-        risk_level = 'CRITICAL' if pos['Consolidated_Weight'] > 20 else 'HIGH' if pos['Consolidated_Weight'] > 15 else 'MEDIUM'
-        risk_data.append({
-            'Risk_Type': 'Position Concentration',
-            'Item': pos['Symbol'],
-            'Current_Value': f"${pos['Market_Value']:,.0f}",
-            'Current_Weight': f"{pos['Consolidated_Weight']:.1f}%",
-            'Risk_Level': risk_level,
-            'Recommendation': f"Reduce to <10% of portfolio (sell ~${pos['Market_Value']*0.3:,.0f})" if pos['Consolidated_Weight'] > 10 else "Monitor closely"
-        })
-    
-    # Sector concentration risks
-    sector_analysis = agg_df.groupby('Sector')['Market_Value'].sum()
-    sector_weights = (sector_analysis / metrics['total_portfolio_value'] * 100)
-    
-    for sector, weight in sector_weights.items():
-        if weight > 30:
-            risk_level = 'HIGH' if weight > 50 else 'MEDIUM'
-            risk_data.append({
-                'Risk_Type': 'Sector Concentration',
-                'Item': sector,
-                'Current_Value': f"${sector_analysis[sector]:,.0f}",
-                'Current_Weight': f"{weight:.1f}%",
-                'Risk_Level': risk_level,
-                'Recommendation': f"Diversify across sectors (target <25%)"
+            options_data.append({
+                'Symbol': symbol,
+                'Strategy': 'Covered Call',
+                'Position_Value': position_value,
+                'Position_Weight_%': weight,
+                'Est_Monthly_Yield_%': monthly_yield,
+                'Est_Annual_Yield_%': monthly_yield * 12,
+                'Round_Lots': round_lots
             })
     
-    # Low diversification warning
-    if len(symbol_agg) < 15:
-        risk_data.append({
-            'Risk_Type': 'Low Diversification',
-            'Item': 'Total Portfolio',
-            'Current_Value': f"{len(symbol_agg)} positions",
-            'Current_Weight': 'N/A',
-            'Risk_Level': 'MEDIUM',
-            'Recommendation': 'Consider adding more positions for better diversification'
-        })
-    
-    # Cash allocation analysis
-    if metrics['cash_percentage'] > 10:
-        risk_data.append({
-            'Risk_Type': 'High Cash Allocation',
-            'Item': 'Cash & Cash Equivalents',
-            'Current_Value': f"${sector_analysis.get('Cash & Cash Equivalents', 0):,.0f}",
-            'Current_Weight': f"{metrics['cash_percentage']:.1f}%",
-            'Risk_Level': 'LOW',
-            'Recommendation': 'Consider investing excess cash for better returns'
-        })
-    elif metrics['cash_percentage'] < 2:
-        risk_data.append({
-            'Risk_Type': 'Low Cash Reserves',
-            'Item': 'Cash & Cash Equivalents',
-            'Current_Value': f"${sector_analysis.get('Cash & Cash Equivalents', 0):,.0f}",
-            'Current_Weight': f"{metrics['cash_percentage']:.1f}%",
-            'Risk_Level': 'MEDIUM',
-            'Recommendation': 'Consider maintaining 3-5% cash for opportunities'
-        })
-    
-    if not risk_data:
-        risk_data = [{
-            'Risk_Type': 'Portfolio Health',
-            'Item': 'Overall Assessment',
-            'Current_Value': 'Well Diversified',
-            'Current_Weight': 'N/A',
-            'Risk_Level': 'LOW',
-            'Recommendation': 'Portfolio shows good diversification - continue monitoring'
-        }]
-    
-    return risk_data
+    return pd.DataFrame(options_data) if options_data else pd.DataFrame()
 
-def create_excel_report(summary_df, consolidated_export, individual_export, sector_summary, 
-                       account_summary, tech_df, options_df, risk_df):
-    """Create Excel report and return as bytes"""
+def create_excel_workbook(agg_df, symbol_agg, metrics, sector_analysis, options_df=None):
+    """Create comprehensive Excel workbook"""
     output = io.BytesIO()
     
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Portfolio Summary
+        summary_data = {
+            'Metric': [
+                'Total Portfolio Value',
+                'Total Consolidated Positions', 
+                'Average Position Size',
+                'Largest Position Value',
+                'Largest Position %',
+                'Top 5 Concentration %',
+                'Top 10 Concentration %',
+                'Cash Percentage %'
+            ],
+            'Value': [
+                f"${metrics['total_portfolio_value']:,.2f}",
+                metrics['position_count'],
+                f"${metrics['average_position_size']:,.2f}",
+                f"${metrics['largest_position']:,.2f}",
+                f"{metrics['single_largest_weight']:.2f}%",
+                f"{metrics['top_5_concentration']:.2f}%",
+                f"{metrics['top_10_concentration']:.2f}%",
+                f"{metrics['cash_percentage']:.2f}%"
+            ]
+        }
+        summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Portfolio_Summary', index=False)
-        consolidated_export.to_excel(writer, sheet_name='Consolidated_Positions', index=False)
-        individual_export.to_excel(writer, sheet_name='Individual_Positions', index=False)
-        sector_summary.to_excel(writer, sheet_name='Sector_Analysis', index=False)
-        account_summary.to_excel(writer, sheet_name='Account_Analysis', index=False)
-        tech_df.to_excel(writer, sheet_name='Technical_Analysis', index=False)
-        options_df.to_excel(writer, sheet_name='Options_Strategies', index=False)
-        risk_df.to_excel(writer, sheet_name='Risk_Analysis', index=False)
+        
+        # Individual and consolidated positions
+        agg_df.sort_values('Market_Value', ascending=False).to_excel(writer, sheet_name='Individual_Positions', index=False)
+        symbol_agg.to_excel(writer, sheet_name='Consolidated_Positions', index=False)
+        
+        # Sector analysis
+        sector_export = sector_analysis.copy()
+        sector_export['Sector'] = sector_export.index
+        sector_export = sector_export[['Sector', 'Market_Value', 'Percentage']]
+        sector_export.to_excel(writer, sheet_name='Sector_Analysis', index=False)
+        
+        # Options opportunities
+        if options_df is not None and not options_df.empty:
+            options_df.to_excel(writer, sheet_name='Options_Opportunities', index=False)
     
-    return output.getvalue()
+    output.seek(0)
+    return output
 
-# Main Streamlit App
+# Main application
 def main():
-    st.markdown('<h1 class="main-header">📊 Portfolio Analyzer Pro</h1>', unsafe_allow_html=True)
+    # Header
+    st.markdown('<div class="main-header">📊 Portfolio Analyzer Pro</div>', unsafe_allow_html=True)
+    st.markdown("### Professional Portfolio Analysis & Options Strategy Tool")
+    st.markdown("---")
     
-    # Sidebar configuration
-    st.sidebar.header("⚙️ Analysis Settings")
+    # Sidebar
+    with st.sidebar:
+        st.header("📁 Upload Portfolio Data")
+        uploaded_file = st.file_uploader(
+            "Choose your portfolio CSV file",
+            type=['csv', 'xlsx', 'xls'],
+            help="Upload your positions file from your broker"
+        )
+        
+        st.markdown("---")
+        st.header("🎯 Analysis Options")
+        
+        include_options = st.checkbox("Include Options Analysis", value=True)
+        include_risk = st.checkbox("Include Risk Analysis", value=True)
+        show_charts = st.checkbox("Show Interactive Charts", value=True)
+        
+        st.markdown("---")
+        st.info("📊 **Features:**\n- Complete portfolio aggregation\n- Sector analysis\n- Risk assessment\n- Options opportunities\n- Excel export")
     
-    # Analysis parameters
-    tech_positions = st.sidebar.slider(
-        "📈 Positions for Technical Analysis", 
-        min_value=5, max_value=20, value=10, step=1,
-        help="Number of top positions to analyze technically"
-    )
-    
-    options_min_weight = st.sidebar.slider(
-        "💼 Min. Position Weight for Options", 
-        min_value=1.0, max_value=10.0, value=3.0, step=0.5,
-        help="Minimum portfolio weight (%) to consider for options strategies"
-    )
-    
-    tech_period = st.sidebar.selectbox(
-        "📊 Technical Analysis Period",
-        ["1mo", "3mo", "6mo", "1y"],
-        index=1,
-        help="Historical period for technical analysis"
-    )
-    
-    include_etfs = st.sidebar.checkbox(
-        "Include ETFs in Technical Analysis",
-        value=False,
-        help="Whether to include ETFs in technical analysis (stocks only by default)"
-    )
-    
-    # File upload
-    st.header("📁 Upload Portfolio Data")
-    uploaded_file = st.file_uploader(
-        "Choose your portfolio CSV or Excel file",
-        type=['csv', 'xlsx', 'xls'],
-        help="Upload your broker's portfolio export file"
-    )
-    
+    # Main content
     if uploaded_file is not None:
         try:
-            # Load file
-            if uploaded_file.name.lower().endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
-            else:
-                df = pd.read_excel(uploaded_file)
-            
-            st.success(f"✅ File loaded successfully! Shape: {df.shape}")
-            
-            # Process data
-            with st.spinner("🔄 Processing portfolio data..."):
+            # Load and process file
+            with st.spinner("🔄 Processing your portfolio data..."):
+                # Read file
+                if uploaded_file.name.lower().endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
+                
+                # Process data
                 sections = find_account_sections(df)
                 agg_df = create_aggregated_positions(sections, df)
                 
                 if len(agg_df) > 0:
+                    # Filter and clean data
                     agg_df = agg_df[agg_df['Symbol'] != '']
                     agg_df = agg_df[agg_df['Market_Value'] > 0]
                     
@@ -484,178 +383,270 @@ def main():
                         'Sector': 'first'
                     }).reset_index()
                     
+                    # Calculate total portfolio value from consolidated positions
+                    total_portfolio_value = symbol_agg['Market_Value'].sum()
+                    
+                    # Calculate metrics using consolidated positions
+                    metrics = calculate_portfolio_metrics(symbol_agg, total_portfolio_value)
+                    
+                    # Add position weights
+                    agg_df['Position_Weight'] = (agg_df['Market_Value'] / total_portfolio_value * 100).round(2)
+                    symbol_agg['Consolidated_Weight'] = (symbol_agg['Market_Value'] / total_portfolio_value * 100).round(2)
                     symbol_agg['Account_Count'] = symbol_agg['Account'].apply(lambda x: len(x.split(', ')))
                     symbol_agg = symbol_agg.sort_values('Market_Value', ascending=False)
                     
-                    # Calculate metrics
-                    metrics = calculate_portfolio_metrics(symbol_agg)
+                    # Store in session state
+                    st.session_state.analyzed_data = {
+                        'agg_df': agg_df,
+                        'symbol_agg': symbol_agg,
+                        'metrics': metrics,
+                        'total_portfolio_value': total_portfolio_value
+                    }
+                    st.session_state.show_analysis = True
+            
+            # Success message
+            st.markdown('<div class="success-box">✅ <strong>Analysis Complete!</strong> Your portfolio has been successfully processed.</div>', unsafe_allow_html=True)
+            
+            # Display results
+            if st.session_state.show_analysis and st.session_state.analyzed_data:
+                data = st.session_state.analyzed_data
+                agg_df = data['agg_df']
+                symbol_agg = data['symbol_agg']
+                metrics = data['metrics']
+                
+                # Portfolio Summary
+                st.header("📊 Portfolio Summary")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Total Value",
+                        f"${metrics['total_portfolio_value']:,.0f}",
+                        delta=f"{symbol_agg['Day_Change_Dollar'].sum():+,.0f}"
+                    )
+                
+                with col2:
+                    cash_value = symbol_agg[symbol_agg['Symbol'] == 'CASH']['Market_Value'].sum()
+                    st.metric(
+                        "Cash & Equivalents",
+                        f"${cash_value:,.0f}",
+                        delta=f"{metrics['cash_percentage']:.1f}%"
+                    )
+                
+                with col3:
+                    largest_position = symbol_agg.iloc[0]
+                    st.metric(
+                        "Largest Position",
+                        f"{largest_position['Symbol']}",
+                        delta=f"{metrics['single_largest_weight']:.1f}%"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "Total Positions",
+                        f"{metrics['position_count']}",
+                        delta=f"Top 5: {metrics['top_5_concentration']:.1f}%"
+                    )
+                
+                st.markdown("---")
+                
+                # Top Holdings
+                st.header("🏆 Top Holdings")
+                
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    top_10 = symbol_agg.head(10)
+                    st.dataframe(
+                        top_10[['Symbol', 'Description', 'Market_Value', 'Consolidated_Weight', 'Account_Count']].style.format({
+                            'Market_Value': '${:,.0f}',
+                            'Consolidated_Weight': '{:.2f}%'
+                        }),
+                        height=400
+                    )
+                
+                with col2:
+                    if show_charts:
+                        fig_pie = px.pie(
+                            top_10, 
+                            values='Market_Value', 
+                            names='Symbol',
+                            title="Top 10 Holdings"
+                        )
+                        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                
+                # Sector Analysis
+                st.header("🏭 Sector Allocation")
+                
+                sector_analysis = symbol_agg.groupby('Sector').agg({'Market_Value': 'sum'}).round(2)
+                sector_analysis['Percentage'] = (sector_analysis['Market_Value'] / total_portfolio_value * 100).round(1)
+                sector_analysis = sector_analysis.sort_values('Market_Value', ascending=False)
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    st.dataframe(
+                        sector_analysis.style.format({
+                            'Market_Value': '${:,.0f}',
+                            'Percentage': '{:.1f}%'
+                        }),
+                        height=400
+                    )
+                
+                with col2:
+                    if show_charts:
+                        fig_sector = px.bar(
+                            sector_analysis.reset_index(), 
+                            x='Sector', 
+                            y='Market_Value',
+                            title="Portfolio by Sector",
+                            color='Percentage',
+                            color_continuous_scale='Blues'
+                        )
+                        fig_sector.update_xaxis(tickangle=45)
+                        st.plotly_chart(fig_sector, use_container_width=True)
+                
+                # Options Analysis
+                if include_options:
+                    st.header("📊 Options Opportunities")
                     
-                    # Add weights
-                    agg_df['Position_Weight'] = (agg_df['Market_Value'] / metrics['total_portfolio_value'] * 100).round(2)
-                    symbol_agg['Consolidated_Weight'] = (symbol_agg['Market_Value'] / metrics['total_portfolio_value'] * 100).round(2)
-            
-            # Display key metrics
-            st.header("📊 Portfolio Overview")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "Total Portfolio Value",
-                    f"${metrics['total_portfolio_value']:,.0f}",
-                    help="Total market value of all positions"
-                )
-            
-            with col2:
-                st.metric(
-                    "Unique Positions",
-                    f"{metrics['position_count']}",
-                    help="Number of unique securities (consolidated across accounts)"
-                )
-            
-            with col3:
-                st.metric(
-                    "Largest Position",
-                    f"{metrics['single_largest_weight']:.1f}%",
-                    f"{metrics['largest_position_symbol']}",
-                    help="Percentage of portfolio in largest single position"
-                )
-            
-            with col4:
-                st.metric(
-                    "Cash Allocation",
-                    f"{metrics['cash_percentage']:.1f}%",
-                    help="Percentage of portfolio in cash and cash equivalents"
-                )
-            
-            # Display cash positions if detected
-            cash_positions = symbol_agg[symbol_agg['Sector'] == 'Cash & Cash Equivalents']
-            if len(cash_positions) > 0:
-                with st.expander("💰 Cash Positions Detected"):
-                    for _, pos in cash_positions.iterrows():
-                        st.write(f"**{pos['Symbol']}**: ${pos['Market_Value']:,.2f} ({pos['Consolidated_Weight']:.1f}%)")
-            
-            # Top Holdings
-            st.header("🏆 Top 10 Holdings")
-            top_10 = symbol_agg.head(10)[['Symbol', 'Description', 'Market_Value', 'Consolidated_Weight', 'Sector']]
-            top_10.columns = ['Symbol', 'Description', 'Market Value', 'Weight %', 'Sector']
-            top_10['Market Value'] = top_10['Market Value'].apply(lambda x: f"${x:,.0f}")
-            top_10['Weight %'] = top_10['Weight %'].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(top_10, use_container_width=True)
-            
-            # Technical Analysis
-            st.header("📈 Technical Analysis")
-            
-            # Get symbols for technical analysis
-            top_positions = symbol_agg.head(tech_positions)
-            stock_symbols = []
-            
-            for _, pos in top_positions.iterrows():
-                symbol = pos['Symbol']
-                if include_etfs:
-                    if symbol and len(symbol) <= 5 and symbol.isalpha() and pos['Sector'] != 'Cash & Cash Equivalents':
-                        stock_symbols.append((symbol, pos['Market_Value'], pos['Consolidated_Weight']))
-                else:
-                    if symbol and len(symbol) <= 5 and symbol.isalpha() and pos['Sector'] not in ['Cash & Cash Equivalents', 'ETF']:
-                        stock_symbols.append((symbol, pos['Market_Value'], pos['Consolidated_Weight']))
-            
-            if stock_symbols:
-                st.info(f"Analyzing {len(stock_symbols)} positions for technical signals...")
-                
-                # Get technical data
-                symbols_only = [item[0] for item in stock_symbols]
-                tech_data = get_technical_analysis(symbols_only, tech_period)
-                
-                if tech_data:
-                    # Add position info to technical data
-                    for tech_item in tech_data:
-                        symbol = tech_item['Symbol']
-                        pos_info = next((item for item in stock_symbols if item[0] == symbol), None)
-                        if pos_info:
-                            tech_item['Position_Value'] = pos_info[1]
-                            tech_item['Position_Weight'] = pos_info[2]
+                    options_df = analyze_options_opportunities(symbol_agg)
                     
-                    tech_df = pd.DataFrame(tech_data)
-                    tech_df = tech_df.sort_values('Position_Value', ascending=False)
+                    if not options_df.empty:
+                        st.dataframe(
+                            options_df.style.format({
+                                'Position_Value': '${:,.0f}',
+                                'Position_Weight_%': '{:.2f}%',
+                                'Est_Monthly_Yield_%': '{:.2f}%',
+                                'Est_Annual_Yield_%': '{:.2f}%'
+                            }),
+                            height=300
+                        )
+                        
+                        st.info("💡 **Options Strategy Tips:**\n- Use covered calls on positions >5% for income generation\n- Consider protective puts for concentrated holdings >10%\n- Monitor time decay and roll positions before expiration")
+                    else:
+                        st.info("No significant positions (>3%) suitable for options strategies found.")
+                
+                # Risk Analysis
+                if include_risk:
+                    st.header("⚠️ Risk Analysis")
                     
-                    # Display technical analysis results
-                    st.subheader("📊 Technical Signals")
+                    col1, col2 = st.columns(2)
                     
-                    display_cols = ['Symbol', 'Current_Price', 'Position_Weight', 'RSI', 'Price_vs_SMA20', 'Signal']
-                    display_df = tech_df[display_cols].copy()
-                    display_df.columns = ['Symbol', 'Price', 'Weight %', 'RSI', 'vs SMA20', 'Signal']
-                    display_df['Price'] = display_df['Price'].apply(lambda x: f"${x:.2f}")
-                    display_df['Weight %'] = display_df['Weight %'].apply(lambda x: f"{x:.1f}%")
-                    display_df['RSI'] = display_df['RSI'].apply(lambda x: f"{x:.1f}")
+                    with col1:
+                        st.subheader("Concentration Risks")
+                        concentrated = symbol_agg[symbol_agg['Consolidated_Weight'] > 5]
+                        
+                        if not concentrated.empty:
+                            for _, pos in concentrated.iterrows():
+                                severity = "🔴 High" if pos['Consolidated_Weight'] > 10 else "🟡 Medium"
+                                st.write(f"{severity}: **{pos['Symbol']}** - {pos['Consolidated_Weight']:.1f}% of portfolio")
+                        else:
+                            st.success("✅ No significant concentration risks detected")
                     
-                    st.dataframe(display_df, use_container_width=True)
-                else:
-                    st.warning("Could not fetch technical data for the selected positions")
-                    tech_df = pd.DataFrame()
-            else:
-                st.info("No individual stocks found for technical analysis in top positions")
-                tech_df = pd.DataFrame()
-            
-            # Options Analysis
-            st.header("💼 Options Strategies")
-            
-            options_data = analyze_options_strategies(symbol_agg, options_min_weight)
-            
-            if options_data:
-                options_df = pd.DataFrame(options_data)
-                options_df = options_df.sort_values('Position_Value', ascending=False)
+                    with col2:
+                        st.subheader("Consolidation Opportunities")
+                        multi_account = symbol_agg[symbol_agg['Account_Count'] > 1]
+                        
+                        if not multi_account.empty:
+                            for _, pos in multi_account.head(5).iterrows():
+                                st.write(f"🔄 **{pos['Symbol']}**: ${pos['Market_Value']:,.0f} across {pos['Account_Count']} accounts")
+                        else:
+                            st.info("No multi-account positions found")
                 
-                st.subheader("📈 Covered Call Opportunities")
+                # Export Section
+                st.header("💾 Export Analysis")
                 
-                display_options = options_df[['Symbol', 'Position_Weight', 'Suggested_Strike', 'Monthly_Yield_Est', 'Annual_Yield_Est', 'Recommended_Expiration']].copy()
-                display_options.columns = ['Symbol', 'Weight %', 'Suggested Strike', 'Monthly Yield %', 'Annual Yield %', 'Expiration']
-                display_options['Weight %'] = display_options['Weight %'].apply(lambda x: f"{x:.1f}%")
-                display_options['Suggested Strike'] = display_options['Suggested Strike'].apply(lambda x: f"${x:.2f}")
-                display_options['Monthly Yield %'] = display_options['Monthly Yield %'].apply(lambda x: f"{x:.2f}%")
-                display_options['Annual Yield %'] = display_options['Annual Yield %'].apply(lambda x: f"{x:.1f}%")
+                col1, col2, col3 = st.columns(3)
                 
-                st.dataframe(display_options, use_container_width=True)
+                with col1:
+                    if st.button("📊 Generate Excel Report", type="primary"):
+                        with st.spinner("Creating Excel workbook..."):
+                            excel_data = create_excel_workbook(
+                                agg_df, 
+                                symbol_agg, 
+                                metrics, 
+                                sector_analysis, 
+                                options_df if include_options else None
+                            )
+                            
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+                            filename = f"portfolio_analysis_{timestamp}.xlsx"
+                            
+                            st.download_button(
+                                label="⬇️ Download Excel Report",
+                                data=excel_data,
+                                file_name=filename,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                            
+                            st.success("✅ Excel report generated successfully!")
                 
-                st.info("💡 **Options Strategy Note**: These are estimated yields based on typical option premiums. Actual premiums vary based on volatility, time to expiration, and market conditions. Consider 30-45 day expirations for covered calls.")
-            else:
-                st.info(f"No positions above {options_min_weight}% found for options analysis")
-                options_df = pd.DataFrame()
-            
-            # Risk Analysis
-            st.header("⚠️ Risk Analysis")
-            
-            risk_data = create_risk_analysis(symbol_agg, agg_df, metrics)
-            risk_df = pd.DataFrame(risk_data)
-            
-            # Color code risk levels
-            def color_risk_level(val):
-                if val == 'CRITICAL':
-                    return 'background-color: #ff6b6b'
-                elif val == 'HIGH':
-                    return 'background-color: #ffa500'
-                elif val == 'MEDIUM':
-                    return 'background-color: #ffeb3b'
-                else:
-                    return 'background-color: #4caf50'
-            
-            styled_risk = risk_df.style.applymap(color_risk_level, subset=['Risk_Level'])
-            st.dataframe(styled_risk, use_container_width=True)
-            
-            # Prepare Excel export
-            st.header("📥 Download Complete Analysis")
-            
-            # Prepare all dataframes for Excel
-            summary_data = {
-                'Metric': [
-                    'Total Portfolio Value',
-                    'Unique Positions (Consolidated)', 
-                    'Individual Holdings (All Accounts)',
-                    'Average Position Size (Consolidated)',
-                    'Largest Position Symbol',
-                    'Largest Position Value',
-                    'Largest Position Weight',
-                    'Top 5 Concentration',
-                    'Top 10 Concentration',
-                    'Cash Percentage',
-                    'Number of Accounts',
-                    'Analysis
+                with col2:
+                    csv_data = symbol_agg.to_csv(index=False)
+                    st.download_button(
+                        label="📄 Download CSV (Consolidated)",
+                        data=csv_data,
+                        file_name=f"consolidated_positions_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+                
+                with col3:
+                    json_data = {
+                        'portfolio_summary': metrics,
+                        'top_holdings': symbol_agg.head(10).to_dict('records'),
+                        'sector_allocation': sector_analysis.to_dict(),
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    
+                    st.download_button(
+                        label="🔧 Download JSON (API)",
+                        data=pd.io.json.dumps(json_data, indent=2),
+                        file_name=f"portfolio_data_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                        mime="application/json"
+                    )
+        
+        except Exception as e:
+            st.error(f"❌ Error processing file: {str(e)}")
+            st.info("Please ensure your file is in the correct format with the expected columns.")
+    
+    else:
+        # Welcome screen
+        st.info("👆 **Get Started**: Upload your portfolio CSV file using the sidebar to begin analysis.")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("### 📊 **Features**")
+            st.markdown("""
+            - Complete portfolio aggregation
+            - Risk and concentration analysis
+            - Sector allocation breakdown
+            - Options strategy opportunities
+            - Multi-format exports
+            """)
+        
+        with col2:
+            st.markdown("### 🎯 **Analysis Types**")
+            st.markdown("""
+            - Individual vs consolidated positions
+            - Account-level breakdowns
+            - Technical insights
+            - Performance tracking
+            - Interactive visualizations
+            """)
+        
+        with col3:
+            st.markdown("### 💼 **Export Options**")
+            st.markdown("""
+            - Comprehensive Excel workbooks
+            - CSV data files
+            - JSON for API integration
+            - Professional reports
+            - Custom formatting
+            """)
+
+if __name__ == "__main__":
+    main()
