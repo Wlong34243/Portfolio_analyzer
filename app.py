@@ -467,15 +467,21 @@ def main():
                     )
                 
                 with col2:
-                    if show_charts:
-                        fig_pie = px.pie(
-                            top_10, 
-                            values='Market_Value', 
-                            names='Symbol',
-                            title="Top 10 Holdings"
-                        )
-                        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                        st.plotly_chart(fig_pie, use_container_width=True)
+                    if show_charts and len(top_10) > 0:
+                        try:
+                            # Top 10 pie chart
+                            fig_pie = px.pie(
+                                top_10, 
+                                values='Market_Value', 
+                                names='Symbol',
+                                title="Top 10 Holdings"
+                            )
+                            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                            fig_pie.update_layout(height=400)
+                            st.plotly_chart(fig_pie, use_container_width=True)
+                        except Exception as chart_error:
+                            st.warning(f"Chart display issue: {chart_error}")
+                            st.info("Data is still available in the table.")
                 
                 # Sector Analysis
                 st.header("🏭 Sector Allocation")
@@ -496,17 +502,32 @@ def main():
                     )
                 
                 with col2:
-                    if show_charts:
-                        fig_sector = px.bar(
-                            sector_analysis.reset_index(), 
-                            x='Sector', 
-                            y='Market_Value',
-                            title="Portfolio by Sector",
-                            color='Percentage',
-                            color_continuous_scale='Blues'
-                        )
-                        fig_sector.update_xaxis(tickangle=45)
-                        st.plotly_chart(fig_sector, use_container_width=True)
+                    if show_charts and not sector_analysis.empty:
+                        try:
+                            # Create sector allocation chart using Plotly
+                            sector_chart_data = sector_analysis.reset_index()
+                            
+                            fig_sector = px.bar(
+                                sector_chart_data, 
+                                x='Sector', 
+                                y='Market_Value',
+                                title="Portfolio by Sector",
+                                color='Market_Value',
+                                color_continuous_scale='Blues',
+                                labels={'Market_Value': 'Market Value ($)', 'Sector': 'Sector'}
+                            )
+                            
+                            fig_sector.update_layout(
+                                xaxis_tickangle=45,
+                                height=400,
+                                showlegend=False
+                            )
+                            
+                            st.plotly_chart(fig_sector, use_container_width=True)
+                            
+                        except Exception as chart_error:
+                            st.warning(f"Chart display issue: {chart_error}")
+                            st.info("Data is still available in the table above.")
                 
                 # Options Analysis
                 if include_options:
