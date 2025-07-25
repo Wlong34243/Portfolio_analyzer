@@ -3,8 +3,6 @@ pandas
 numpy
 yfinance
 scipy
-matplotlib
-seaborn
 openpyxl
 xlsxwriter
 plotly
