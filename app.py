@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import io
 import re
+import json
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
@@ -624,7 +625,7 @@ def main():
                     
                     st.download_button(
                         label="🔧 Download JSON (API)",
-                        data=pd.io.json.dumps(json_data, indent=2),
+                        data=json.dumps(json_data, indent=2, default=str),
                         file_name=f"portfolio_data_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
                         mime="application/json"
                     )
